@@ -1,5 +1,8 @@
-module moex-history-downloader
+module github.com/denis-gudim/moex-history-downloader
 
-go 1.22.2
+go 1.22.12
 
-require golang.org/x/sync v0.11.0
+require (
+	github.com/pkg/errors v0.9.1
+	golang.org/x/sync v0.11.0
+)

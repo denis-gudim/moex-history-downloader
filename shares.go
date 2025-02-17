@@ -2,133 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
+	"github.com/denis-gudim/moex-history-downloader/internal/history"
 	"golang.org/x/sync/errgroup"
 )
-
-const (
-	baseURL = "https://iss.moex.com/iss/engines/stock/markets/shares/boards"
-)
-
-// OHLCV represents Open-High-Low-Close-Volume data
-type OHLCV struct {
-	Date   time.Time
-	Ticker string
-	Open   float64
-	High   float64
-	Low    float64
-	Close  float64
-	Volume int64
-}
-
-// getOHLC fetches OHLC data from MOEX ISS
-func getOHLC(board, ticker string, startDate, endDate time.Time, interval int) ([]OHLCV, error) {
-	var result []OHLCV
-	start := 0
-
-	for {
-		url := fmt.Sprintf("%s/%s/securities/%s/candles.csv?from=%s&till=%s&interval=%d&start=%d",
-			baseURL, board, ticker,
-			startDate.Format("2006-01-02"),
-			endDate.Format("2006-01-02"),
-			interval, start)
-
-		fmt.Printf("Fetching %s data for %s - %s\n", ticker, startDate.Format("2006-01-02"), endDate.Format("2006-01-02"))
-
-		resp, err := http.Get(url)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch data: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		}
-
-		reader := csv.NewReader(resp.Body)
-		reader.Comma = ';'
-		if _, err := reader.Read(); err != nil {
-			return nil, fmt.Errorf("failed to read header: %w", err)
-		}
-
-		reader.FieldsPerRecord = 0
-		columns := make(map[string]int)
-		column, err := reader.Read()
-		if err != nil {
-			return nil, fmt.Errorf("failed to read header: %w", err)
-		}
-		for indx, name := range column {
-			columns[name] = indx
-		}
-
-		var batchSize int
-		for {
-			record, err := reader.Read()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, fmt.Errorf("failed to read record: %w", err)
-			}
-
-			date, err := time.Parse("2006-01-02 15:04:05", record[columns["begin"]])
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse date: %w", err)
-			}
-
-			open, err := strconv.ParseFloat(record[columns["open"]], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse open price: %w", err)
-			}
-
-			high, err := strconv.ParseFloat(record[columns["high"]], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse high price: %w", err)
-			}
-
-			low, err := strconv.ParseFloat(record[columns["low"]], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse low price: %w", err)
-			}
-
-			close, err := strconv.ParseFloat(record[columns["close"]], 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse close price: %w", err)
-			}
-
-			volume, err := strconv.ParseInt(record[columns["volume"]], 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse volume: %w", err)
-			}
-
-			result = append(result, OHLCV{
-				Date:   date,
-				Ticker: ticker,
-				Open:   open,
-				High:   high,
-				Low:    low,
-				Close:  close,
-				Volume: volume,
-			})
-			batchSize++
-		}
-
-		if batchSize < 500 {
-			break
-		}
-		start += batchSize
-	}
-
-	return result, nil
-}
 
 // ensureDir creates directory if it doesn't exist
 func ensureDir(dir string) error {
@@ -165,7 +46,7 @@ func createOrAppendFile(fileName string, writeHeader bool) (*os.File, error) {
 }
 
 // writeDataToFile writes OHLCV data to file
-func writeDataToFile(file *os.File, data []OHLCV) error {
+func writeDataToFile(file *os.File, data []history.OHLCV) error {
 	for _, ohlc := range data {
 		line := fmt.Sprintf("%s,%s,%g,%g,%g,%g,%d\n",
 			ohlc.Date.Format("20060102"),
@@ -199,6 +80,8 @@ func ProcessStocks(yearStart, yearEnd int, stocks ...string) error {
 			}
 			defer file.Close()
 
+			fetcher := &history.Fetcher{}
+
 			for year := yearStart; year <= yearEnd; year++ {
 				for month := 1; month <= 12; month++ {
 					startDate := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
@@ -209,7 +92,7 @@ func ProcessStocks(yearStart, yearEnd int, stocks ...string) error {
 						continue
 					}
 
-					data, err := getOHLC("TQBR", stock, startDate, endDate, 1)
+					data, err := fetcher.Fetch(context.Background(), "stock", "shares", "TQBR", stock, startDate, endDate, 1)
 					if err != nil {
 						return fmt.Errorf("failed to get OHLC data for %s %d-%02d: %w", stock, year, month, err)
 					}
